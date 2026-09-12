@@ -67,9 +67,11 @@ gcloud artifacts repositories create sb --repository-format=docker \
 
 The `iam.serviceAccountUser` grant on `sb-control-plane` is easy to forget and fails in a confusing way: instance creation is rejected because the caller cannot attach `sb-sandbox-vm` to a new VM.
 
-**Tailscale.** In the admin console, mint an auth key that is reusable, pre-approved, and **not** ephemeral. Ephemeral nodes get reaped when they go offline, so every stop/start would churn the node identity and break the hostname. Tailscale state lives in `/var/lib/tailscale`, so the key is only consumed on first boot.
+**Tailscale.** First add `tag:sandbox` to `tagOwners` in the tailnet policy, plus an SSH rule with `dst: ["tag:sandbox"]` and `users: ["alanko"]`. The default policy's SSH rule only covers `autogroup:self`, which a tagged device is not, so without this you cannot SSH in at all. Use `action: accept` rather than `check` so a long agent session is never interrupted by a re-auth prompt.
 
-Then create an OAuth client with the `devices:core` scope, which covers listing and removing devices on delete.
+Then mint an auth key that is reusable and **not** ephemeral, tagged `tag:sandbox`. Ephemeral nodes get reaped when they go offline, so every stop/start would churn the node identity and break the hostname. The tag also disables node key expiry, so a long-lived box never silently drops off the tailnet. Tailscale state lives in `/var/lib/tailscale`, so the key is only consumed on first boot.
+
+Finally create an OAuth client under **Settings → Trust credentials** (not "OAuth clients" as older docs say) with `Devices → Core` read and write. Write scope requires naming a tag, which is useful here: scoping it to `tag:sandbox` means the control plane can delete sandbox devices and nothing else.
 
 Store both:
 
@@ -82,7 +84,14 @@ Your tailnet ACL needs an SSH rule allowing you to connect as the `alanko` user 
 
 **GitHub.** Set up Workload Identity Federation (no JSON key, the repo is public) and add `WIF_PROVIDER` and `WIF_SERVICE_ACCOUNT` as repo secrets, plus a `TAILNET` repo variable.
 
-**IAP.** The first enable has to happen in the Cloud Console, because OAuth clients cannot be created through the API. Deploy once, turn IAP on in the console, then grant yourself access:
+**IAP.** This project has no Google organization, and that changes the setup in a way the docs bury. Google-Managed OAuth, which the `--iap` deploy flag assumes, requires an organization. Without one the flag happily enables IAP with no OAuth client behind it, and every request returns a bare 502 whose only clue is a page reading "Empty Google Account OAuth client ID(s)/secret(s)". Toggling IAP in the Cloud Run console does not fix it either.
+
+What works, in order:
+
+1. Google Auth Platform → **Branding** → Get started. Audience must be **External**, the only choice without an organization. The app stays in Testing, which is fine: IAP still enforces `iap.httpsResourceAccessor`, so nobody but you gets through.
+2. IAP → the service's **Settings** → choose **Custom OAuth** → **Auto Generate Credentials** → Save. This creates the client and its `iap.googleapis.com/.../handleRedirect` URI for you.
+
+A working setup redirects to `accounts.google.com` instead of returning 502. Then grant yourself access:
 
 ```sh
 gcloud beta iap web add-iam-policy-binding --resource-type=cloud-run \
@@ -107,11 +116,15 @@ Authentication falls back to a fake local identity when there is no IAP header, 
 Once the UI shows `ready`:
 
 ```sh
-ssh sb-myproject
+ssh sb-myproject          # do this first: it seeds known_hosts
 claude login
 gh auth login
 herdr machine add sb-myproject --label myproject
 ```
+
+The plain `ssh` has to come first. `herdr machine add` does not auto-accept unknown host keys and fails with "remote platform detection failed: Host key verification failed" on a box you have never connected to.
+
+If you reuse a name you previously deleted, the old host key will conflict. Clear it with `ssh-keygen -R sb-myproject` before connecting.
 
 The two logins persist for the life of the VM, so this is once per box rather than once per session. They cannot be automated, which is why there is no per-template secret mechanism.
 
@@ -131,6 +144,10 @@ The trap is not a VM you left running, it is five VMs you stopped and forgot. Th
 The serial console is a ~1 MB ring buffer. A very chatty `setup.sh` can push its own early output out of reach.
 
 The exit node is enabled last, after every package is installed. Turning it on earlier routes all of apt through your house for no benefit.
+
+An active exit node cuts the VM off from `169.254.169.254`, its own metadata server, because Tailscale's `ip rule` at priority 5270 sends everything into its routing table and the exit node rejects link-local traffic. `sandbox-metadata-route` adds a rule at priority 5000 to keep metadata on the primary NIC. The ordering is easy to get wrong: **tailscaled clears that rule when it starts**, so the rule has to be applied after Tailscale is up, not before. The systemd unit is `After=tailscaled.service`, and `exit-node.sh` applies it again directly after switching the exit node on.
+
+This one is worth understanding rather than trusting, because the failure is quiet. Status reporting ends in `|| true`, so a broken metadata route shows up only as a stage badge stuck on "provisioning", while the real damage is that `bootstrap.sh` reads its template from metadata on every boot.
 
 GCE runs the startup script on every boot, not just the first. `bootstrap.sh` uses a marker file so a stop/start does not re-run a five minute setup.
 
