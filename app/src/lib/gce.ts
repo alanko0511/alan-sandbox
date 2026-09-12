@@ -222,8 +222,11 @@ export async function serialOutput(name: string, start: number) {
  */
 export async function readStage(name: string): Promise<string | null> {
   const path = encodeURIComponent('sandbox/status')
-  const data = await callOrNull<{ variableValue?: string }>(
-    `${ZONE_BASE}/instances/${name}/getGuestAttributes?queryPath=${path}`,
-  )
-  return data?.variableValue ?? null
+  const data = await callOrNull<{
+    variableValue?: string
+    queryValue?: { items?: Array<{ value?: string }> }
+  }>(`${ZONE_BASE}/instances/${name}/getGuestAttributes?queryPath=${path}`)
+
+  // A queryPath query answers with queryValue.items, not variableValue.
+  return data?.variableValue ?? data?.queryValue?.items?.[0]?.value ?? null
 }

@@ -6,6 +6,9 @@ import { NAME_PATTERN } from '#/lib/config'
 
 const POLL_MS = 1500
 
+/** ~1 minute of tolerance before declaring the stream dead. */
+const MAX_CONSECUTIVE_ERRORS = 40
+
 /**
  * Stream the VM's serial console as SSE.
  *
@@ -46,6 +49,13 @@ export const Route = createFileRoute('/api/vms/$name/logs')({
                 closed = true
               })
 
+              // A stream opened straight after create races the instance: the
+              // serial port 404s until the VM is far enough along to serve it.
+              // Treating that as fatal would leave the drawer that opens on
+              // create permanently empty, so errors are tolerated for a while
+              // and only give up if they persist.
+              let consecutiveErrors = 0
+
               while (!closed) {
                 try {
                   const { contents, next } = await serialOutput(name, cursor)
@@ -60,15 +70,20 @@ export const Route = createFileRoute('/api/vms/$name/logs')({
                     send('stage', { stage })
                   }
 
+                  consecutiveErrors = 0
+
                   if (stage === 'ready' || stage?.startsWith('failed')) {
                     send('done', { stage })
                     break
                   }
                 } catch (err) {
-                  send('error', {
-                    message: err instanceof Error ? err.message : String(err),
-                  })
-                  break
+                  consecutiveErrors += 1
+                  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    send('error', {
+                      message: err instanceof Error ? err.message : String(err),
+                    })
+                    break
+                  }
                 }
 
                 await new Promise((r) => setTimeout(r, POLL_MS))
