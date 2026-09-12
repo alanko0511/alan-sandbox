@@ -19,6 +19,29 @@ as_user() { sudo -u "$SANDBOX_USER" -H bash -lc "$1"; }
 
 export DEBIAN_FRONTEND=noninteractive
 
+# ------------------------------------------------- metadata route (before tailscale)
+# Must be installed before the exit node goes on, and must survive reboots:
+# without it the VM cannot read its own instance metadata once egress is routed
+# through the exit node. See metadata-route.sh for the mechanism.
+install -m 0755 "$(dirname "$0")/metadata-route.sh" /usr/local/bin/sandbox-metadata-route
+cat > /etc/systemd/system/sandbox-metadata-route.service <<'UNIT'
+[Unit]
+Description=Keep GCE metadata reachable when a Tailscale exit node is active
+After=network-online.target
+Before=google-startup-scripts.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/sandbox-metadata-route
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now sandbox-metadata-route.service
+
 # ---------------------------------------------------------------- user account
 if ! id -u "$SANDBOX_USER" >/dev/null 2>&1; then
   log "creating user $SANDBOX_USER"

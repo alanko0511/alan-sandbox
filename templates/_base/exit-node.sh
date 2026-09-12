@@ -21,3 +21,14 @@ if tailscale status --json | jq -e '.ExitNodeStatus.Online == true' >/dev/null 2
 else
   echo "[exit-node] WARNING: exit node not reporting online; check '$EXIT_NODE' is advertising and approved" >&2
 fi
+
+# Turning on the exit node is what breaks metadata, so check it here rather than
+# discovering later that status reporting has been silently failing.
+if curl -fsS -m 5 -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/name" >/dev/null 2>&1; then
+  echo "[exit-node] metadata server still reachable"
+else
+  echo "[exit-node] ERROR: metadata server unreachable with the exit node on." >&2
+  echo "[exit-node] sandbox-metadata-route should have added an ip rule; check 'ip rule show'." >&2
+  exit 1
+fi
