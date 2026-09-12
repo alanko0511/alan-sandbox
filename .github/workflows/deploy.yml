@@ -52,12 +52,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Epoch seconds rather than a run number: the tag then survives the
+          # run counter being reset and sorts chronologically on its own.
+          TAG="templates-$(date +%s)"
+
           # --latest keeps releases/latest/download/... resolving, which is the
           # URL burned into every VM's startup script.
-          gh release create "templates-v${{ github.run_number }}" \
+          gh release create "$TAG" \
             sandbox-templates.tar.gz \
             --latest \
-            --title "templates v${{ github.run_number }}" \
+            --title "$TAG" \
             --notes "Templates and VM scripts from ${{ github.sha }}"
 
   deploy:
