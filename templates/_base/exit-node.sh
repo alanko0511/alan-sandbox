@@ -22,8 +22,13 @@ else
   echo "[exit-node] WARNING: exit node not reporting online; check '$EXIT_NODE' is advertising and approved" >&2
 fi
 
-# Turning on the exit node is what breaks metadata, so check it here rather than
-# discovering later that status reporting has been silently failing.
+# Enabling the exit node is what breaks metadata, and tailscaled clears the rule
+# whenever it reconfigures, so (re-)apply it here now that Tailscale is up and
+# routing. The boot-time systemd unit covers the same job on later reboots.
+echo "[exit-node] restoring metadata route"
+/usr/local/bin/sandbox-metadata-route
+
+# Verify rather than discovering later that status reporting silently failed.
 if curl -fsS -m 5 -H "Metadata-Flavor: Google" \
   "http://metadata.google.internal/computeMetadata/v1/instance/name" >/dev/null 2>&1; then
   echo "[exit-node] metadata server still reachable"

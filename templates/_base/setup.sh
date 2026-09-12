@@ -27,9 +27,11 @@ install -m 0755 "$(dirname "$0")/metadata-route.sh" /usr/local/bin/sandbox-metad
 cat > /etc/systemd/system/sandbox-metadata-route.service <<'UNIT'
 [Unit]
 Description=Keep GCE metadata reachable when a Tailscale exit node is active
-After=network-online.target
-Before=google-startup-scripts.service
+# Must run AFTER tailscaled: it clears the rule when it starts, so adding it
+# earlier is a no-op. Must run BEFORE the startup script, which reads metadata.
+After=network-online.target tailscaled.service
 Wants=network-online.target
+Before=google-startup-scripts.service
 
 [Service]
 Type=oneshot
@@ -40,7 +42,7 @@ ExecStart=/usr/local/bin/sandbox-metadata-route
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now sandbox-metadata-route.service
+systemctl enable sandbox-metadata-route.service
 
 # ---------------------------------------------------------------- user account
 if ! id -u "$SANDBOX_USER" >/dev/null 2>&1; then
