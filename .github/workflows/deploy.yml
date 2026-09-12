@@ -1,7 +1,9 @@
 name: deploy
 
-# Both jobs run from the same commit so the template list baked into the
-# container image and the tarball VMs download can never drift apart.
+# The release and the image are cut from the same commit, and the deploy waits
+# on the release, so the template list baked into the image is never ahead of
+# the tarball a VM downloads. The release is skipped when no VM-side file
+# changed.
 on:
   push:
     branches: [main]
@@ -14,8 +16,38 @@ env:
   REPOSITORY: sb
 
 jobs:
+  # A release is only worth cutting when the files VMs actually download have
+  # changed. An app-only push would otherwise publish an identical tarball under
+  # a new tag on every commit.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      vm_files: ${{ steps.filter.outputs.vm_files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # enough to diff against the previous commit
+
+      - id: filter
+        run: |
+          # Publish when in doubt: a manual run, or a first/shallow commit with
+          # no parent to compare against, should not silently skip the release.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            || ! git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "vm_files=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git diff --name-only HEAD^ HEAD | grep -qE '^(templates|scripts)/'; then
+            echo "vm_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vm_files=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish-templates:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.vm_files == 'true'
     permissions:
       contents: write
     steps:
@@ -66,7 +98,11 @@ jobs:
 
   deploy:
     runs-on: ubuntu-latest
-    needs: publish-templates
+    needs: [changes, publish-templates]
+    # publish-templates is skipped on an app-only push, and a skipped dependency
+    # would otherwise skip this job too. Still refuses to deploy if the release
+    # ran and failed, so the image never gets ahead of the tarball.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.publish-templates.result != 'failure' }}
     permissions:
       contents: read
       id-token: write # required for Workload Identity Federation
