@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Re-apply setup on a live VM after editing a template.
+#
+# Pulls the latest templates release and re-runs base + template setup. Both are
+# required to be idempotent, which is what makes this safe to run repeatedly.
+set -euo pipefail
+
+RELEASE_URL="https://github.com/alanko0511/alan-sandbox/releases/latest/download/sandbox-templates.tar.gz"
+ROOT=/opt/sandbox
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -E "$0" "$@"
+fi
+
+TEMPLATE="$(curl -fsS -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/attributes/sandbox-template")"
+
+echo "[rerun] fetching latest templates release"
+tmp="$(mktemp -d)"
+curl -fsSL -o "$tmp/t.tar.gz" "$RELEASE_URL"
+rm -rf "$ROOT/templates" "$ROOT/scripts"
+tar -xzf "$tmp/t.tar.gz" -C "$ROOT"
+rm -rf "$tmp"
+
+install -m 0755 "$ROOT/scripts/rerun" /usr/local/bin/sandbox-rerun
+
+chmod +x "$ROOT/templates/_base/setup.sh" "$ROOT/templates/$TEMPLATE/setup.sh"
+"$ROOT/templates/_base/setup.sh"
+SANDBOX_ROOT="$ROOT" "$ROOT/templates/$TEMPLATE/setup.sh"
+
+echo "[rerun] done"

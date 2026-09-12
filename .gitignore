@@ -1,0 +1,9 @@
+node_modules/
+.output/
+.nitro/
+.vite/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tar.gz

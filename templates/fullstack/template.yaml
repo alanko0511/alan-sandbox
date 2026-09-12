@@ -1,0 +1,4 @@
+# Full-stack web work: Postgres in Docker alongside a Node dev server.
+description: "Full-stack: Postgres 16 in Docker, Node dev server"
+disk:
+  sizeGb: 80

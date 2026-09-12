@@ -1,0 +1,4 @@
+# Minimal sandbox: base toolchain only.
+description: "Scratch box: base toolchain only, no project setup"
+disk:
+  sizeGb: 30

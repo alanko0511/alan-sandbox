@@ -1,0 +1,105 @@
+name: deploy
+
+# Both jobs run from the same commit so the template list baked into the
+# container image and the tarball VMs download can never drift apart.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: alan-ko-playground
+  REGION: northamerica-northeast1
+  SERVICE: sb-control-plane
+  REPOSITORY: sb
+
+jobs:
+  publish-templates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate every template declares its disk
+        run: |
+          # Fail the release rather than shipping a template the control plane
+          # will reject at runtime.
+          fail=0
+          for dir in templates/*/; do
+            name=$(basename "$dir")
+            [ "${name#_}" = "$name" ] || continue
+            if [ ! -f "$dir/template.yaml" ]; then
+              echo "::error::$name is missing template.yaml"; fail=1; continue
+            fi
+            grep -q '^\s*sizeGb:' "$dir/template.yaml" || {
+              echo "::error::$name: template.yaml has no disk.sizeGb"; fail=1; }
+            [ -f "$dir/setup.sh" ] || { echo "::error::$name has no setup.sh"; fail=1; }
+          done
+          exit $fail
+
+      - name: Syntax-check shell scripts
+        run: |
+          for f in scripts/* templates/*/*.sh; do
+            [ -f "$f" ] || continue
+            bash -n "$f" || exit 1
+          done
+
+      - name: Package
+        run: tar czf sandbox-templates.tar.gz templates/ scripts/
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # --latest keeps releases/latest/download/... resolving, which is the
+          # URL burned into every VM's startup script.
+          gh release create "templates-v${{ github.run_number }}" \
+            sandbox-templates.tar.gz \
+            --latest \
+            --title "templates v${{ github.run_number }}" \
+            --notes "Templates and VM scripts from ${{ github.sha }}"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: publish-templates
+    permissions:
+      contents: read
+      id-token: write # required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+
+      # No JSON service-account key: this repo is public.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build and push
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          # --timeout=3600 is required: the default 300s would sever the SSE
+          # boot-log stream partway through provisioning.
+          gcloud run deploy "$SERVICE" \
+            --image="$IMAGE" \
+            --region="$REGION" \
+            --project="$PROJECT_ID" \
+            --service-account="sb-control-plane@$PROJECT_ID.iam.gserviceaccount.com" \
+            --no-allow-unauthenticated \
+            --iap \
+            --timeout=3600 \
+            --min-instances=0 \
+            --max-instances=2 \
+            --set-secrets=TAILSCALE_OAUTH=tailscale-oauth-client:latest \
+            --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCP_ZONE=$REGION-b,TAILNET=${{ vars.TAILNET }}
